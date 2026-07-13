@@ -151,3 +151,9 @@ INSTALL_HYS.md
 AGENTS.md
 _version.py.mcp.json
 telefuser/_version.py
+
+
+# benchmark inputs
+!benchmarks/lingbot_world_fast/data/case03/image.jpg
+!benchmarks/lingbot_world_fast/data/case03/intrinsics.npy
+!benchmarks/lingbot_world_fast/data/case03/poses.npy
