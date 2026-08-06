@@ -575,6 +575,56 @@ class Decoder3d(nn.Module):
         return x
 
 
+def _propagate_temporal_geometry(
+    module: nn.Module,
+    receptive_field: int,
+    sampling_stride: int,
+) -> tuple[int, int]:
+    """Propagate temporal receptive field and input stride through one encoder module."""
+    if isinstance(module, CausalConv3d):
+        temporal_kernel = module.kernel_size[0]
+        temporal_dilation = module.dilation[0]
+        receptive_field += (temporal_kernel - 1) * temporal_dilation * sampling_stride
+        sampling_stride *= module.stride[0]
+        return receptive_field, sampling_stride
+
+    if isinstance(module, ResidualBlock):
+        residual_geometry = _propagate_temporal_geometry(
+            module.residual,
+            receptive_field,
+            sampling_stride,
+        )
+        shortcut_geometry = _propagate_temporal_geometry(
+            module.shortcut,
+            receptive_field,
+            sampling_stride,
+        )
+        if residual_geometry[1] != shortcut_geometry[1]:
+            raise ValueError("Wan encoder residual branches must have the same temporal stride")
+        return max(residual_geometry[0], shortcut_geometry[0]), residual_geometry[1]
+
+    if isinstance(module, Resample):
+        if module.mode == "downsample3d":
+            return _propagate_temporal_geometry(module.time_conv, receptive_field, sampling_stride)
+        if module.mode in {"downsample2d", "none"}:
+            return receptive_field, sampling_stride
+        raise ValueError(f"Unsupported Wan encoder resample mode: {module.mode!r}")
+
+    if isinstance(module, nn.Sequential):
+        for layer in module:
+            receptive_field, sampling_stride = _propagate_temporal_geometry(
+                layer,
+                receptive_field,
+                sampling_stride,
+            )
+        return receptive_field, sampling_stride
+
+    if isinstance(module, AttentionBlock | RMS_norm | nn.SiLU | nn.Dropout | nn.Identity):
+        return receptive_field, sampling_stride
+
+    raise TypeError(f"Unsupported module in Wan encoder temporal geometry: {type(module).__name__}")
+
+
 def _enable_spatial_parallel_decode(vae: WanVideoVAE) -> int:
     """Replace decoder convolutions with height-sharded equivalents in a worker process."""
     if _spatial_world_size() <= 1:
@@ -656,6 +706,24 @@ class VideoVAE(nn.Module):
             dropout,
             pruning_rate=decode_pruning_rate,
         )
+
+    def _encoder_temporal_geometry(self) -> tuple[int, int]:
+        """Return pixel-space receptive field and stride for one encoded latent."""
+        receptive_field = 1
+        sampling_stride = 1
+        for module in (
+            self.encoder.conv1,
+            self.encoder.downsamples,
+            self.encoder.middle,
+            self.encoder.head,
+            self.conv1,
+        ):
+            receptive_field, sampling_stride = _propagate_temporal_geometry(
+                module,
+                receptive_field,
+                sampling_stride,
+            )
+        return receptive_field, sampling_stride
 
     def forward(self, x: torch.Tensor) -> tuple:
         mu, log_var = self.encode(x)
@@ -840,6 +908,10 @@ class WanVideoVAE(BaseModel):
         # Feature cache for streaming decode (list-based)
         self._feat_cache = []
         self._feat_idx = [0]
+
+    def _encoder_temporal_geometry(self) -> tuple[int, int]:
+        """Return temporal geometry from the instantiated encoder topology."""
+        return self.model._encoder_temporal_geometry()
 
     def enable_channels_last_3d(self) -> int:
         """Enable channels_last_3d memory format for Conv3d weights.

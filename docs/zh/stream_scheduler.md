@@ -76,6 +76,10 @@ LingBot 在 session 初始化时只编码一次有界的参考图前缀。通用
 encode worker 直接分发到每个 DiT rank，并常驻在对应 session cache。后续 condition artifact 只包含
 `chunk_index` 和 `chunk_size`；每个 rank 本地切片、按需重复尾部 latent，并生成首帧 mask。
 
+前缀上限由实例化的 Wan VAE encoder 拓扑推导，而不是使用固定帧数。根据时间感受野与采样步长，可以找到
+第一个不再依赖参考图的 latent。默认拓扑保留 latent 0 到 29，长 session 随后可以安全复用 latent 29；
+较短的请求则保留完整 condition 序列。
+
 session 对 condition metadata 保持固定深度为 2 的 lookahead，且不依赖 control 准入：
 
 - session 启动时，在有界 ingress 有容量的前提下提交 `condition[0]` 和 `condition[1]`；
@@ -84,7 +88,7 @@ session 对 condition metadata 保持固定深度为 2 的 lookahead，且不依
   `0 <= next_condition_index - next_control_index <= 2`；
 - 若 backpressure 导致预取缺失，下一个 control 会与缺失的 condition request 原子准入。
 
-condition 与 control 仍按 session 和 sequence ID 在 denoise 前汇合。该优化只调整调度，不改变模型计算或 causal
+condition 与 control 仍按 session 和 sequence ID 在 denoise 前汇合。lookahead 优化只调整调度，不改变 causal
 cache 所有权。`latency_anchor_artifact="control"` 保证单独预取 condition 不会启动 control-to-output 计时。
 
 这一模型专属策略位于通用 scheduler 之上；edge capacity 约束在途 metadata，常驻 condition latent 计入
