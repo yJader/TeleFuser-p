@@ -82,6 +82,11 @@ LingBot encodes the bounded reference-image prefix once while initializing the s
 remains resident in the session cache. Later condition artifacts contain only `chunk_index` and `chunk_size`; each
 rank slices the resident latent, repeats its tail when necessary, and constructs the first-frame mask locally.
 
+The prefix bound comes from the instantiated Wan VAE encoder topology rather than a fixed frame count. Its temporal
+receptive field and sampling stride identify the first latent that is independent of the reference image. The default
+topology retains latent frames 0 through 29, then safely repeats latent 29 for the remainder of a long session. Shorter
+requests retain their complete condition sequence.
+
 The session keeps a fixed lookahead of two condition metadata artifacts independently of control admission:
 
 - Session startup admits `condition[0]` and `condition[1]` when bounded ingress has capacity.
@@ -90,8 +95,8 @@ The session keeps a fixed lookahead of two condition metadata artifacts independ
   `0 <= next_condition_index - next_control_index <= 2`.
 - If backpressure prevented prefetch, the next control and its missing condition request are admitted atomically.
 
-Conditions and controls still join by session and sequence ID before denoise. The optimization changes scheduling,
-not model computation or causal cache ownership. `latency_anchor_artifact="control"` ensures condition-only
+Conditions and controls still join by session and sequence ID before denoise. The lookahead optimization changes
+scheduling, not causal cache ownership. `latency_anchor_artifact="control"` ensures condition-only
 prefetch does not start the control-to-output timer.
 
 This model-specific policy sits above the generic scheduler. Edge capacities bound in-flight metadata while retained

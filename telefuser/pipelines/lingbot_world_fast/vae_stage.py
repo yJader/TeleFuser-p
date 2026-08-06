@@ -118,6 +118,9 @@ class LingBotWorldFastVAEEncodeStage(BaseStage):
         self.vae: WanVideoVAE = module_manager.fetch_module("wan_video_vae")
         if self.vae is None:
             raise ValueError("LingBot VAE encode stage requires a loaded wan_video_vae module")
+        receptive_field, sampling_stride = self.vae._encoder_temporal_geometry()
+        first_input_independent_latent = (receptive_field + sampling_stride - 1) // sampling_stride
+        self._condition_prefix_latent_frames = first_input_independent_latent + 1
         self.model_names = ["vae"]
         # Condition chunks reuse the same bounded shapes for the session lifetime.
         # Retain allocator blocks instead of forcing a driver allocation per call.
@@ -215,7 +218,7 @@ class LingBotWorldFastVAEEncodeStage(BaseStage):
             if state.condition_image is None:
                 raise RuntimeError("The first condition request requires the session image tensor")
             target_latent_frames = chunk_count * chunk_size
-            encoded_latent_frames = min(target_latent_frames, 16)
+            encoded_latent_frames = min(target_latent_frames, self._condition_prefix_latent_frames)
             video = torch.zeros(
                 (3, 1 + 4 * (encoded_latent_frames - 1), height, width),
                 device=self.device,
